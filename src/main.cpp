@@ -2,16 +2,28 @@
 
 #include "Flasher.h"
 #include "FlasherBuilder.h"
+#include "ModeManager.h"
+#include "PatternId.h"
 #include "outputs/MultiPinOutput.h"
 #include "patterns/AlternatingPattern.h"
 #include "patterns/DoubleBlinkPolicePattern.h"
 #include "patterns/SosPattern.h"
 
+#include "debounce/HysteresisDebounce.h"
+#include "debounce/Debouncer.h"
+#include "inputs/ButtonController.h"
+#include "inputs/InterruptSampler.h"
+#include "inputs/PollingSampler.h"
+#include "inputs/SerialController.h"
+
 namespace {
 
-constexpr uint8_t  kPinRed      = 4;
-constexpr uint8_t  kPinBlue     = 5;
-constexpr uint32_t kSerialBaud  = 115200;
+constexpr uint8_t  kPinRed        = 4;
+constexpr uint8_t  kPinBlue       = 5;
+constexpr uint8_t  kPinExtButton  = 2;
+constexpr uint8_t  kPinBootButton = 0;
+constexpr uint32_t kSerialBaud    = 115200;
+constexpr uint32_t kDebounceMs    = 20;
 
 pflash::MultiPinOutput            gOutput({ kPinRed, kPinBlue });
 pflash::AlternatingPattern        gAlternating;
@@ -23,54 +35,35 @@ pflash::Flasher gFlasher = pflash::FlasherBuilder()
     .withPattern(&gDoubleBlink)
     .build();
 
-void printHelp() {
-    Serial.println(F("[pflash] commands:"));
-    Serial.println(F("  p0  -> Alternating"));
-    Serial.println(F("  p1  -> DoubleBlinkPolice (default)"));
-    Serial.println(F("  p2  -> SOS"));
-    Serial.println(F("  ?   -> print current pattern"));
-}
+pflash::HysteresisDebounce gExtAlgo (kDebounceMs);
+pflash::HysteresisDebounce gBootAlgo(kDebounceMs);
+pflash::Debouncer          gExtDeb  (&gExtAlgo);
+pflash::Debouncer          gBootDeb (&gBootAlgo);
 
-void handleSerialCommand(const String& line) {
-    if (line.length() == 0) {
-        return;
-    }
+pflash::SerialController  gSerialCtl;
+pflash::InterruptSampler  gExtSampler;       // external button reacts on interrupt
+pflash::PollingSampler    gBootSampler;      // BOOT button stays polled
 
-    if (line == "p0") {
-        gFlasher.setPattern(&gAlternating);
-        Serial.printf("[pflash] switched -> %s\n", gFlasher.currentPatternName());
-    } else if (line == "p1") {
-        gFlasher.setPattern(&gDoubleBlink);
-        Serial.printf("[pflash] switched -> %s\n", gFlasher.currentPatternName());
-    } else if (line == "p2") {
-        gFlasher.setPattern(&gSos);
-        Serial.printf("[pflash] switched -> %s\n", gFlasher.currentPatternName());
-    } else if (line == "?") {
-        Serial.printf("[pflash] current pattern: %s\n", gFlasher.currentPatternName());
-    } else {
-        Serial.printf("[pflash] unknown cmd: '%s'\n", line.c_str());
-        printHelp();
-    }
-}
+pflash::ButtonController gExtBtn({
+    .pin       = kPinExtButton,
+    .debouncer = &gExtDeb,
+    .sampler   = &gExtSampler,
+    .label     = "ext",
+});
 
-void pumpSerial() {
-    static String buf;
-    while (Serial.available() > 0) {
-        const char c = static_cast<char>(Serial.read());
-        if (c == '\r') {
-            continue;
-        }
-        if (c == '\n') {
-            buf.trim();
-            handleSerialCommand(buf);
-            buf = "";
-            continue;
-        }
-        if (buf.length() < 32) {
-            buf += c;
-        }
-    }
-}
+pflash::ButtonController gBootBtn({
+    .pin       = kPinBootButton,
+    .debouncer = &gBootDeb,
+    .sampler   = &gBootSampler,
+    .label     = "boot",
+});
+
+pflash::ModeManager gModes({
+    .flasher      = &gFlasher,
+    .patterns     = { &gAlternating, &gDoubleBlink, &gSos },
+    .controllers  = { &gSerialCtl, &gExtBtn, &gBootBtn },
+    .defaultIndex = pflash::idx(pflash::PatternId::DoubleBlinkPolice),
+});
 
 } // namespace
 
@@ -78,16 +71,11 @@ void setup() {
     Serial.begin(kSerialBaud);
     delay(50);
 
-    gFlasher.begin();
-
-    Serial.printf("[pflash] started pattern=%s channels=2 (GPIO %u red, GPIO %u blue)\n",
-                  gFlasher.currentPatternName(),
-                  static_cast<unsigned>(kPinRed),
-                  static_cast<unsigned>(kPinBlue));
-    printHelp();
+    gModes.begin();
+    gModes.printHelp();
 }
 
 void loop() {
     gFlasher.update();
-    pumpSerial();
+    gModes.tick();
 }
