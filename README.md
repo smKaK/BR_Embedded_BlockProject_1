@@ -1,138 +1,218 @@
-# PoliceFlash
+# Roadlight
 
-Two-channel police-style LED flasher for the **ESP32-S3-DevKitC-1**, built with PlatformIO + Arduino framework. Runs several blink patterns and lets you switch between them live — over the serial console or via hardware buttons — with a pluggable input + debounce stack behind the scenes.
+Three-channel traffic light for the **ESP32-S3-DevKitC-1**, built with PlatformIO + Arduino framework. A compile-time CRTP state machine drives the red/yellow/green cycle; day/night mode can be driven by one of three sources at runtime — a phase timer, the BOOT button, or a photoresistor.
 
 ## Hardware
 
 - **MCU:** ESP32-S3 @ 240 MHz (variant `N16R8` — 16 MB Flash, 8 MB PSRAM)
 - **Board:** `esp32-s3-devkitc-1`
-- **LEDs:**
+- **LEDs** (active-high through current-limiting resistors to GND):
   - Red → **GPIO 4**
-  - Blue → **GPIO 5**
-- **Buttons (active-low, `INPUT_PULLUP`):**
-  - External button → **GPIO 2** (interrupt-gated sampling)
-  - On-board BOOT button → **GPIO 0** (polled sampling)
+  - Yellow → **GPIO 5**
+  - Green → **GPIO 6**
+- **Buttons** (active-low, `INPUT_PULLUP`, interrupt-sampled + debounced):
+  - Pedestrian button → **GPIO 2**
+  - On-board BOOT button → **GPIO 0**
+- **Photoresistor (LDR) voltage divider on GPIO 1:**
 
-Wire each LED through a current-limiting resistor to ground. Wire each external button between its GPIO and GND.
+  ```
+    3V3 ──[ 10 kΩ ]──┬── GPIO 1 (ADC1_CH0)
+                     │
+                   [ LDR ]
+                     │
+                    GND
+  ```
 
-## Runtime Control
+  With this wiring a darker room raises the ADC reading, which matches the default thresholds (`>= 2500` → night, `<= 1800` → day). Use an ADC1 pin only (GPIO 1–10 on S3); ADC2 conflicts with Wi-Fi.
 
-After flashing, open the serial monitor at **115200 baud**. Either type a command and press Enter, or press one of the buttons:
+## Runtime behaviour
 
-| Input            | Effect                               |
-|------------------|--------------------------------------|
-| `p0`             | Alternating — red/blue ping-pong     |
-| `p1`             | DoubleBlinkPolice *(default)*        |
-| `p2`             | SOS — Morse `... --- ...` on both    |
-| `?`              | Print current pattern name           |
-| any other text   | Print help                           |
-| External / BOOT  | Cycle to the next pattern            |
+After flashing, open the serial monitor at **115200 baud**.
+
+### Day cycle
+
+`DayRed` → `DayGreen` → `DayGreenBlink` → `DayYellow` → `DayYellowBlink` → `DayRed` → …
+
+The two `*Blink` states are pre-change warnings — a fast-blinking version of the colour that's about to end. Durations (`kDay*Ms` in `include/traffic_light_config.h`) add up to roughly ten seconds per full cycle.
+
+### Night cycle
+
+A single `NightBlink` state that plays the `BlinkYellow` pattern (500 ms on / 500 ms off). The FSM stays parked here until a day/night source signals "go back to day".
+
+### Pedestrian button (GPIO 2)
+
+Press during `DayRed` → FSM jumps immediately to `DayGreen`. Ignored in any other state so the cycle can't be shortened mid-phase.
+
+### Day/Night sources — only one is live at a time
+
+`TrafficLightCoordinator` multiplexes three sources:
+
+| Source        | Signal                                                             |
+|---------------|--------------------------------------------------------------------|
+| `timer`       | `PhaseTimer` auto-flips every 30 s (`kDayPhaseMs` / `kNightPhaseMs`). |
+| `button`      | Short-press BOOT toggles day/night.                                |
+| `lightSensor` | LDR reading crosses the hysteresis thresholds.                     |
+
+**Long-press BOOT (≥ 800 ms) cycles** the active source in the order `timer → button → lightSensor → timer`. Serial prints `[coord] night source -> <name>` on every switch. When switching *to* `timer` or `lightSensor` the FSM force-syncs to whatever that source's current reading says it should be.
+
+### Tunables
+
+Everything user-facing lives as `constexpr` in `include/traffic_light_config.h`:
+
+- Pins: `kPinRed/Yellow/Green`, `kPinPedButton`, `kPinBootButton`, `kPinLdr`.
+- Day cycle durations: `kDayRedMs`, `kDayGreenMs`, `kDayGreenBlinkMs`, `kDayYellowMs`, `kDayYellowBlinkMs`.
+- Night blink half-period: `kNightBlinkMs`.
+- Phase timer: `kDayPhaseMs`, `kNightPhaseMs`.
+- LDR: `kLdrDarkThreshold`, `kLdrBrightThreshold`, `kLdrSampleIntervalMs`.
+- Button: `kDebounceMs`, `kBootHoldMs`.
 
 ## Architecture
 
-The firmware splits into three cooperating layers. `Flasher` still drives the LEDs from pattern frames; a new `ModeManager` owns the pattern registry and the list of input controllers; each controller turns its own source (serial / button) into a uniform `ControlEvent` stream.
-
 ```
 main.cpp
+  │ wires the globals (patterns, output, inputs, FSM, coordinator)
   │
-  ├── Flasher  ──  ticks through the active IPattern and writes masks to the output
-  │     ├── IOutputStrategy  ←  MultiPinOutput (digitalWrite on N pins)
-  │     └── IPattern         ←  AlternatingPattern
-  │                             DoubleBlinkPolicePattern
-  │                             SosPattern
-  │
-  └── ModeManager  ──  polls IControllers every tick, dispatches ControlEvents to Flasher
-        ├── SerialController           ←  parses "p0/p1/p2/?" from UART
-        └── ButtonController (x N)     ←  pin → Debouncer → edge → Command::NextPattern
-              ├── IDebounceAlgo        ←  Hysteresis / Integrator / ShiftRegister
-              └── IButtonSampler       ←  PollingSampler / InterruptSampler
+  └── TrafficLightCoordinator
+        │ runs the loop: flasher.update() + polls each source + fsm.tick()
+        │
+        ├── Flasher                  ─ advances the current IPattern's frame table,
+        │     ├── MultiPinOutput    ← writes masks to GPIO 4/5/6
+        │     └── IPattern          ← SolidRed / SolidYellow / SolidGreen /
+        │                              BlinkGreen / BlinkYellow / BlinkYellowFast
+        │
+        ├── ModeManager              ─ pattern registry, exposes applyPattern(PatternId,…)
+        │
+        ├── TrafficLightFsm          ─ CRTP on fsm::StateMachine.
+        │     states: DayRed, DayGreen, DayGreenBlink, DayYellow, DayYellowBlink, NightBlink
+        │     events: fsm::Timeout, PedestrianPress, NightModeOn, NightModeOff
+        │     on_enter calls modes.applyPattern(…) and arms set_timeout(…)
+        │
+        ├── PhaseTimer               ─ 30 s/30 s Day⇄Night flip emitter
+        ├── LightSensor              ─ analogRead + hysteresis → Day/Night events
+        ├── ButtonController (ped)   ─ GPIO 2 → Command::PedestrianPress
+        └── ButtonController (boot)  ─ GPIO 0 → NightToggle (short) / CycleNightSource (long)
 ```
 
-All wiring is done with designated-initializer `Config` structs, e.g.:
+All wiring is done with designated-initialiser `Config` structs in `src/main.cpp`. For example:
 
 ```cpp
-pflash::ButtonController gExtBtn({
-    .pin       = kPinExtButton,
-    .debouncer = &gExtDeb,
-    .sampler   = &gExtSampler,
-    .label     = "ext",
+ButtonController gBootBtn(ButtonController::Config{
+    .pin       = kPinBootButton,
+    .debouncer = &gBootDeb,
+    .sampler   = &gBootSampler,
+    .activeLow = true,
+    .pressCmd  = Command::NightToggle,
+    .label     = "boot",
+    .holdMs    = kBootHoldMs,
+    .holdCmd   = Command::CycleNightSource,
 });
 
-pflash::ModeManager gModes({
-    .flasher      = &gFlasher,
-    .patterns     = { &gAlternating, &gDoubleBlink, &gSos },
-    .controllers  = { &gSerialCtl, &gExtBtn, &gBootBtn },
-    .defaultIndex = pflash::idx(pflash::PatternId::DoubleBlinkPolice),
+TrafficLightCoordinator gCoord(TrafficLightCoordinator::Config{
+    .flasher     = &gFlasher,
+    .modes       = &gModes,
+    .fsm         = &gFsm,
+    .phase       = &gPhase,
+    .pedButton   = &gPedBtn,
+    .bootButton  = &gBootBtn,
+    .lightSensor = &gLdr,
 });
 ```
+
+### The FSM (`include/fsm.hpp` + `TrafficLightFsm`)
+
+`fsm::StateMachine<Derived, States...>` is a header-only CRTP template:
+
+- States are plain value types held in a `std::variant`.
+- The derived class provides `Trans handle(State&, const Event&)` overloads plus a catch-all `template <class S, class E> Trans handle(S&, const E&)`.
+- `dispatch(ev, now_ms)` routes via `std::visit` — O(1), inlined to a jump table.
+- `set_timeout(ms)` armed in `on_enter` synthesises a `fsm::Timeout` event when it expires, driving the day cycle.
+- No heap, no RTTI, no exceptions.
+
+`TrafficLightFsm`'s transitions:
+
+- Day cycle is driven by `fsm::Timeout` (`DayRed → DayGreen → DayGreenBlink → DayYellow → DayYellowBlink → DayRed`).
+- `PedestrianPress` only fires from `DayRed → DayGreen`.
+- `NightModeOn` transitions any day state to `NightBlink`; `NightModeOff` returns `NightBlink → DayRed`.
+
+### The coordinator (`TrafficLightCoordinator`)
+
+One `begin(now_ms)` + one `tick(now_ms)`. `tick()` delegates to small per-source helpers:
+
+```cpp
+void TrafficLightCoordinator::tick(uint32_t now_ms) {
+    flasher_->update();
+    pollPedestrian(now_ms);
+    pollBootButton(now_ms);
+    pollPhase(now_ms);
+    pollLightSensor(now_ms);
+    fsm_->tick(now_ms);
+}
+```
+
+Each `poll*` helper reads its source and only dispatches to the FSM when that source is the active one. Adding a new source is an extra `poll*()` method + a new enum value.
 
 ### Debouncing
 
-When a mechanical button is pressed or released, the contact doesn't cleanly snap from one level to the other — it rattles for a few milliseconds, producing a burst of fake edges. A debounce algorithm watches the noisy raw signal and answers one question: *has the line really changed, or is this still bounce?* Each of the three algorithms shipped here gives a different answer to that question, and each one is a legitimate choice depending on what you care about (latency, noise rejection, or CPU cost).
+Mechanical buttons rattle when pressed; a debouncer watches the raw signal and commits a stable level. Three algorithms are available (`IDebounceAlgo` impls):
 
-#### HysteresisDebounce — "wait until it settles"
+- **HysteresisDebounce** — commit once the raw level has held steady for `stableMs`. Predictable wall-clock latency; the default.
+- **IntegratorDebounce** — each sample votes; counter flips only at saturation. Graceful with isolated noise, tied to sample rate.
+- **ShiftRegisterDebounce** — require `width` consecutive clean samples to agree. Strictest; biggest latency.
 
-The idea: trust a new level only once it has held steady for long enough. As long as the line keeps flipping, the timer keeps resetting and the output stays put; the moment the raw signal stops changing and stays at the new value for `stableMs`, we commit.
+Sampling is factored behind `IButtonSampler`:
 
-This is the most intuitive model — it maps directly onto how a human would explain debouncing ("wait a bit, then look"). Latency is predictable: every real press costs a fixed `stableMs` delay. Noise has to be persistent to get through, but a single very brief spike is still ignored because it resets the timer and then disappears.
+- **PollingSampler** — sample every tick.
+- **InterruptSampler** — only sample when a `CHANGE` ISR fired or while the debouncer is still settling. Used by both buttons.
 
-Best when you want simple, bounded, wall-clock-based behavior and the exact sample cadence isn't under your control.
+### Long-press detection
 
-#### IntegratorDebounce — "weight of evidence"
+`ButtonController::Config` accepts optional `holdMs` + `holdCmd`. When `holdMs > 0` the controller switches to hold-aware mode:
 
-The idea: treat each raw sample as one vote. High samples push a counter up, low samples pull it down, and the counter is clamped at both ends. The committed level only flips when the counter reaches the top (enough "high" votes in a row to overpower any recent "low" votes) or the bottom. Between the extremes, the output keeps its last value — so isolated noise samples just nudge the counter a little and quickly get cancelled out.
+- `pressCmd` fires **on release**, only if released before `holdMs` elapsed.
+- `holdCmd` fires **once while still holding** at the `holdMs` mark.
 
-This one doesn't care about time — it cares about how lopsided the recent sample history is. A single spurious sample only costs ±1, so brief spikes barely move the needle. But it also means the commit delay depends on how often you sample, not on wall-clock time: sample twice as fast and it commits twice as quickly.
+`holdMs == 0` (the default) keeps the legacy rising-edge behaviour used by the pedestrian button.
 
-Best when samples come at a roughly fixed rate and you want graceful degradation against noise rather than a hard "wait N ms" window.
+## Build & flash
 
-#### ShiftRegisterDebounce — "unanimous consensus"
+```bash
+pio run                          # build
+pio run --target upload          # flash
+pio device monitor               # serial monitor (115200)
+pio run --target clean           # clean
+```
 
-The idea: keep the last `width` samples in a rolling window and only commit a new level when *all* of them agree. One mismatching sample anywhere in the window is enough to veto the transition. Samples are taken at most once per `sampleIntervalMs`, so the effective commit delay is `width × sampleIntervalMs`.
+Build flags live in `platformio.ini`. C++17 (`-std=gnu++17`), no extra libraries.
 
-This is the strictest of the three. It will not commit during any bounce burst, no matter how asymmetric — it needs a completely clean window to flip. The cost is latency: you're essentially waiting for `width` consecutive clean samples. It also scales naturally to very noisy signals by just widening the window or slowing the sample rate.
-
-Best when the signal is very bouncy or electrically noisy and you'd rather pay extra latency than ever commit a wrong level.
-
-#### Picking one
-
-- **Hysteresis** — default. Clean buttons, predictable delay, easy to reason about.
-- **Integrator** — sampled at a fixed rate and want the output to "coast" through isolated glitches.
-- **ShiftRegister** — noisy environment, want the firmest guarantee that every commit is preceded by a quiet window.
-
-### Sampling strategies
-
-`IButtonSampler::shouldSample(now_ms)` decides each tick whether `ButtonController` should read the pin:
-
-- **PollingSampler** — always samples (simple, slightly more CPU).
-- **InterruptSampler** — only samples when a GPIO ISR flagged a change, or while the debouncer is still settling.
-
-### Adding a new pattern
+## Adding a new pattern
 
 1. Create `include/patterns/MyPattern.h` deriving from `pflash::IPattern`.
-2. Create `src/patterns/MyPattern.cpp` with a `constexpr Frame kFrames[]` table — each frame is `{ duration_ms, channel_mask }`.
-3. Add it to `PatternId` (keeps serial `pN` indices in sync) and include it in the `ModeManager` `patterns` list in `main.cpp`.
+2. Create `src/patterns/MyPattern.cpp` with a `constexpr Frame kFrames[]` table — each frame is `{ duration_ms, channel_mask }`. Bit `N` maps to channel `N` in the `MultiPinOutput` pin list (bit 0 = red, bit 1 = yellow, bit 2 = green).
+3. Add a `PatternId` enum value matching the index at which the pattern is registered in `ModeManager`'s Config.
+4. Instantiate it and include it in the `patterns` list in `src/main.cpp`.
+5. Reference it from a `TrafficLightFsm::on_enter(State&)` via `modes_->applyPattern(PatternId::X, "fsm")`.
 
-A `Frame`'s `channel_mask` bit `N` maps to the LED at index `N` in the `MultiPinOutput` pin list.
+## Adding a new day/night source
 
-### Adding a new input source
+1. Implement a polled class with an `Event poll(uint32_t now_ms)` method — or implement `IController` if button-like semantics fit.
+2. Add a field to `TrafficLightCoordinator::Config` and a new `NightSource` enum value.
+3. Add a `pollX()` helper in the coordinator that dispatches events only when `activeSource_` matches, and call it from `tick()`.
+4. Extend `cycleSource()` and `forceSyncToSource()` so the new source joins the rotation and the FSM re-syncs when switched to.
 
-1. Implement `pflash::IController` (`begin()`, `poll()`, `name()`) and emit `ControlEvent`s.
-2. Instantiate it and add it to the `ModeManager` `controllers` list.
-
-## Project Layout
+## Project layout
 
 ```
-include/          project headers
+include/              project headers
 ├── Flasher.h, FlasherBuilder.h
-├── ModeManager.h, PatternId.h
-├── IOutputStrategy.h, IPattern.h
-├── outputs/      concrete output strategies
-├── patterns/     concrete pattern headers
-├── inputs/       IController, SerialController, ButtonController, samplers
-└── debounce/     Debouncer + IDebounceAlgo implementations
-src/              matching .cpp files + main.cpp
-lib/              local libraries
-test/             unit tests (PlatformIO)
-platformio.ini    build environment
+├── ModeManager.h, PatternId.h, IPattern.h, IOutputStrategy.h
+├── PhaseTimer.h, LightSensor.h
+├── TrafficLightFsm.h, TrafficLightCoordinator.h
+├── fsm.hpp
+├── traffic_light_config.h
+├── outputs/          MultiPinOutput
+├── patterns/         SolidRed/Yellow/Green, BlinkYellow, BlinkGreen, BlinkYellowFast
+├── inputs/           IController, ButtonController, InterruptSampler, PollingSampler
+└── debounce/         Debouncer + IDebounceAlgo implementations
+src/                  matching .cpp files + main.cpp
+platformio.ini        build environment
 ```
