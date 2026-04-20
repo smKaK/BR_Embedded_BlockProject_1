@@ -5,6 +5,7 @@
 #include "ModeManager.h"
 #include "PatternId.h"
 #include "PhaseTimer.h"
+#include "TrafficLightCoordinator.h"
 #include "TrafficLightFsm.h"
 #include "traffic_light_config.h"
 #include "outputs/MultiPinOutput.h"
@@ -72,22 +73,14 @@ ButtonController gBootBtn(ButtonController::Config{
 
 PhaseTimer gPhase({ .dayMs = kDayPhaseMs, .nightMs = kNightPhaseMs });
 
-void dispatchControllerEvent(const ControlEvent& ev, uint32_t now_ms) {
-    switch (ev.cmd) {
-        case Command::PedestrianPress:
-            gFsm.dispatch(PedestrianPress{}, now_ms);
-            break;
-        case Command::NightToggle:
-            if (gFsm.in<NightBlink>()) {
-                gFsm.dispatch(NightModeOff{}, now_ms);
-            } else {
-                gFsm.dispatch(NightModeOn{}, now_ms);
-            }
-            break;
-        default:
-            break;
-    }
-}
+TrafficLightCoordinator gCoord(TrafficLightCoordinator::Config{
+    .flasher    = &gFlasher,
+    .modes      = &gModes,
+    .fsm        = &gFsm,
+    .phase      = &gPhase,
+    .pedButton  = &gPedBtn,
+    .bootButton = &gBootBtn,
+});
 
 } // namespace
 
@@ -95,28 +88,9 @@ void setup() {
     Serial.begin(kSerialBaud);
     delay(50);
 
-    gModes.begin();
-    gPedBtn.begin();
-    gBootBtn.begin();
-
-    const uint32_t now = millis();
-    gPhase.begin(now);
-    gFsm.begin(DayRed{}, now);
+    gCoord.begin(millis());
 }
 
 void loop() {
-    const uint32_t now = millis();
-
-    gFlasher.update();
-
-    dispatchControllerEvent(gPedBtn.poll(),  now);
-    dispatchControllerEvent(gBootBtn.poll(), now);
-
-    switch (gPhase.tick(now)) {
-        case PhaseTimer::Flip::ToNight: gFsm.dispatch(NightModeOn{},  now); break;
-        case PhaseTimer::Flip::ToDay:   gFsm.dispatch(NightModeOff{}, now); break;
-        case PhaseTimer::Flip::None:    break;
-    }
-
-    gFsm.tick(now);
+    gCoord.tick(millis());
 }
