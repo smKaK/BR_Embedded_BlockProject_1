@@ -29,4 +29,13 @@ constexpr uint32_t kNightBlinkMs  = 500;
 constexpr uint32_t kDayPhaseMs    = 30000;
 constexpr uint32_t kNightPhaseMs  = 30000;
 
+// Photoresistor (LDR). ADC reads 0..4095 on ESP32-S3 (default 12-bit).
+constexpr uint8_t  kPinLdr              = 1;
+constexpr uint16_t kLdrDarkThreshold    = 2500;  // reading >= this -> night
+constexpr uint16_t kLdrBrightThreshold  = 1800;  // reading <= this -> day (hysteresis band 1800..2500)
+constexpr uint32_t kLdrSampleIntervalMs = 100;
+
+// Long-press on BOOT button -> cycle night source.
+constexpr uint32_t kBootHoldMs    = 800;
+
 } // namespace pflash

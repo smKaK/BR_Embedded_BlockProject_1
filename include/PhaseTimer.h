@@ -13,23 +13,10 @@ public:
         uint32_t nightMs;
     };
 
-    explicit PhaseTimer(const Config& c)
-        : dayMs_(c.dayMs), nightMs_(c.nightMs) {}
+    explicit PhaseTimer(const Config& c);
 
-    void begin(uint32_t now_ms) {
-        phaseStart_ms_ = now_ms;
-        isDay_         = true;
-    }
-
-    Flip tick(uint32_t now_ms) {
-        const uint32_t dur = isDay_ ? dayMs_ : nightMs_;
-        if ((uint32_t)(now_ms - phaseStart_ms_) < dur) {
-            return Flip::None;
-        }
-        isDay_         = !isDay_;
-        phaseStart_ms_ = now_ms;
-        return isDay_ ? Flip::ToDay : Flip::ToNight;
-    }
+    void begin(uint32_t now_ms);
+    Flip tick(uint32_t now_ms);
 
     bool isDay() const { return isDay_; }
 

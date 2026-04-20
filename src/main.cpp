@@ -2,6 +2,7 @@
 
 #include "Flasher.h"
 #include "FlasherBuilder.h"
+#include "LightSensor.h"
 #include "ModeManager.h"
 #include "PatternId.h"
 #include "PhaseTimer.h"
@@ -69,17 +70,27 @@ ButtonController gBootBtn(ButtonController::Config{
     .activeLow = true,
     .pressCmd  = Command::NightToggle,
     .label     = "boot",
+    .holdMs    = kBootHoldMs,
+    .holdCmd   = Command::CycleNightSource,
 });
 
 PhaseTimer gPhase({ .dayMs = kDayPhaseMs, .nightMs = kNightPhaseMs });
 
+LightSensor gLdr(LightSensor::Config{
+    .pin              = kPinLdr,
+    .darkThreshold    = kLdrDarkThreshold,
+    .brightThreshold  = kLdrBrightThreshold,
+    .sampleIntervalMs = kLdrSampleIntervalMs,
+});
+
 TrafficLightCoordinator gCoord(TrafficLightCoordinator::Config{
-    .flasher    = &gFlasher,
-    .modes      = &gModes,
-    .fsm        = &gFsm,
-    .phase      = &gPhase,
-    .pedButton  = &gPedBtn,
-    .bootButton = &gBootBtn,
+    .flasher     = &gFlasher,
+    .modes       = &gModes,
+    .fsm         = &gFsm,
+    .phase       = &gPhase,
+    .pedButton   = &gPedBtn,
+    .bootButton  = &gBootBtn,
+    .lightSensor = &gLdr,
 });
 
 } // namespace

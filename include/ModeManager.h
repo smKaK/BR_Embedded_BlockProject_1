@@ -24,7 +24,7 @@ public:
     void begin();
 
     void applyPattern(uint8_t idx, const char* source);
-    void applyPattern(PatternId p, const char* source) { applyPattern(idx(p), source); }
+    void applyPattern(PatternId p, const char* source);
 
     uint8_t     currentIndex()       const { return idx_; }
     uint8_t     patternCount()       const { return patternCount_; }

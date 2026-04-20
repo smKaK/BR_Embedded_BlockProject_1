@@ -21,6 +21,10 @@ void ModeManager::begin() {
     flasher_->setPattern(patterns_[idx_]);
 }
 
+void ModeManager::applyPattern(PatternId p, const char* source) {
+    applyPattern(idx(p), source);
+}
+
 void ModeManager::applyPattern(uint8_t idx, const char* source) {
     if (idx >= patternCount_) {
         Serial.printf("[pflash][%s] bad pattern idx %u\n",

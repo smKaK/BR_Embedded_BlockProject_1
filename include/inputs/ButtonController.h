@@ -15,6 +15,8 @@ public:
         bool            activeLow = true;
         Command         pressCmd  = Command::None;
         const char*     label     = "btn";
+        uint32_t        holdMs    = 0;              // 0 disables hold detection
+        Command         holdCmd   = Command::None;
     };
 
     explicit ButtonController(const Config& cfg);
@@ -30,6 +32,10 @@ private:
     bool            activeLow_;
     Command         pressCmd_;
     const char*     label_;
+    uint32_t        holdMs_;
+    Command         holdCmd_;
+    uint32_t        pressStart_ms_{0};
+    bool            holdFired_{false};
 };
 
 } // namespace pflash

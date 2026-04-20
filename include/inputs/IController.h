@@ -8,6 +8,7 @@ enum class Command : uint8_t {
     None = 0,
     PedestrianPress,
     NightToggle,
+    CycleNightSource,
 };
 
 struct ControlEvent {
