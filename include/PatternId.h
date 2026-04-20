@@ -7,9 +7,12 @@ namespace pflash {
 // Pattern identity. The underlying values MUST match the order patterns are
 // registered with ModeManager's Config::patterns list (see main.cpp).
 enum class PatternId : uint8_t {
-    Alternating       = 0,
-    DoubleBlinkPolice = 1,
-    SOS               = 2,
+    SolidRed        = 0,
+    SolidYellow     = 1,
+    SolidGreen      = 2,
+    BlinkYellow     = 3,
+    BlinkGreen      = 4,
+    BlinkYellowFast = 5,
 };
 
 constexpr uint8_t idx(PatternId p) noexcept {

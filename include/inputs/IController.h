@@ -6,10 +6,8 @@ namespace pflash {
 
 enum class Command : uint8_t {
     None = 0,
-    NextPattern,
-    SelectPattern,   // arg = pattern index
-    PrintCurrent,
-    PrintHelp,
+    PedestrianPress,
+    NightToggle,
 };
 
 struct ControlEvent {

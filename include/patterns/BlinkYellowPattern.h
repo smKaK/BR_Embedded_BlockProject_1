@@ -4,7 +4,7 @@
 
 namespace pflash {
 
-class AlternatingPattern final : public IPattern {
+class BlinkYellowPattern final : public IPattern {
 public:
     const Frame* frames()         const override;
     size_t       frameCount()     const override;

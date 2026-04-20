@@ -4,7 +4,7 @@
 
 namespace pflash {
 
-class DoubleBlinkPolicePattern final : public IPattern {
+class SolidYellowPattern final : public IPattern {
 public:
     const Frame* frames()         const override;
     size_t       frameCount()     const override;

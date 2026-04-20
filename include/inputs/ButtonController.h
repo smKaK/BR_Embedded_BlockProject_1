@@ -13,7 +13,7 @@ public:
         Debouncer*      debouncer;
         IButtonSampler* sampler;
         bool            activeLow = true;
-        Command         pressCmd  = Command::NextPattern;
+        Command         pressCmd  = Command::None;
         const char*     label     = "btn";
     };
 
