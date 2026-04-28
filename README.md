@@ -1,3 +1,6 @@
+
+
+
 # Roadlight
 
 Three-channel traffic light for the **ESP32-S3-DevKitC-1**, built with PlatformIO + Arduino framework. A compile-time CRTP state machine drives the red/yellow/green cycle; day/night mode can be driven by one of three sources at runtime — a phase timer, the BOOT button, or a photoresistor.
